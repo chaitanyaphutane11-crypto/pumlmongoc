@@ -1,0 +1,225 @@
+Here’s the **complete VSIX extension code** with a dedicated **Tool Window** for previewing the generated Mongo script. This version lets you paste an Asio file, extract keywords, query Mongo by `Name`, generate the seed script, **preview it inside Visual Studio**, and then **copy to clipboard** or **save to a `.js` file**.
+
+---
+
+## 📄 File 1: Entry.cs
+
+```csharp
+public class Entry
+{
+    public string Header { get; set; }
+    public string Subheader { get; set; }
+    public string Name { get; set; }
+    public string Description { get; set; }
+    public string CodeStub { get; set; }
+    public string AsioStub { get; set; }
+}
+```
+
+---
+
+## 📄 File 2: MongoScriptGenerator.cs
+
+```csharp
+using MongoDB.Driver;
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+
+public class MongoScriptGenerator
+{
+    private readonly IMongoCollection<Entry> _entries;
+
+    public MongoScriptGenerator(IMongoDatabase database)
+    {
+        _entries = database.GetCollection<Entry>("entries");
+    }
+
+    public async void GenerateScript(Action<string> previewCallback)
+    {
+        // Step 1: Read Asio file from InputBox
+        string asioScript = Microsoft.VisualBasic.Interaction.InputBox(
+            "Paste Asio script here", "Mongo Script Generator", "");
+
+        if (string.IsNullOrWhiteSpace(asioScript))
+            return;
+
+        // Step 2: Tokenize into keywords
+        var tokens = asioScript.Split(new char[] { ' ', '\n', '\r', '(', ')', ';', '<', '>', '{', '}', ',', '.' },
+                                      StringSplitOptions.RemoveEmptyEntries);
+
+        // Step 3: Query Mongo by Name field
+        var matchedEntries = await _entries.Find(Builders<Entry>.Filter.In(e => e.Name, tokens)).ToListAsync();
+
+        if (!matchedEntries.Any())
+        {
+            MessageBox.Show("No matching entries found in Mongo.", "Mongo Script Generator");
+            return;
+        }
+
+        // Step 4: Build Mongo insert script
+        var scriptBuilder = new StringBuilder();
+        scriptBuilder.AppendLine("db.entries.insertMany([");
+        foreach (var entry in matchedEntries)
+        {
+            scriptBuilder.AppendLine("  {");
+            scriptBuilder.AppendLine($"    Name: \"{entry.Name}\",");
+            scriptBuilder.AppendLine($"    AsioStub: \"{entry.AsioStub}\",");
+            scriptBuilder.AppendLine($"    CodeStub: \"{entry.CodeStub}\"");
+            scriptBuilder.AppendLine("  },");
+        }
+        scriptBuilder.AppendLine("]);");
+
+        string script = scriptBuilder.ToString();
+
+        // Step 5: Preview in tool window
+        previewCallback(script);
+
+        // Step 6: Copy to clipboard
+        Clipboard.SetText(script);
+
+        // Step 7: Save script to file
+        string filePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "mongo_seed.js");
+        File.WriteAllText(filePath, script);
+
+        // Step 8: Notify user
+        MessageBox.Show($"Mongo script copied to clipboard and saved to {filePath}", "Mongo Script Generator");
+    }
+}
+```
+
+---
+
+## 📄 File 3: MongoScriptToolWindow.cs
+
+```csharp
+using Microsoft.VisualStudio.Shell;
+using System.Runtime.InteropServices;
+using System.Windows.Controls;
+
+[Guid("e3a1b2c4-5678-4def-9012-abcdef987654")]
+public class MongoScriptToolWindow : ToolWindowPane
+{
+    private readonly TextBox _textBox;
+
+    public MongoScriptToolWindow() : base(null)
+    {
+        this.Caption = "Mongo Script Preview";
+        _textBox = new TextBox
+        {
+            AcceptsReturn = true,
+            AcceptsTab = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            TextWrapping = TextWrapping.No,
+            FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+            FontSize = 12
+        };
+        this.Content = _textBox;
+    }
+
+    public void UpdateScript(string script)
+    {
+        _textBox.Text = script;
+    }
+}
+```
+
+---
+
+## 📄 File 4: VSIX Command Handler (Command.cs)
+
+```csharp
+using Microsoft.VisualStudio.Shell;
+using System;
+using System.ComponentModel.Design;
+using Task = System.Threading.Tasks.Task;
+
+internal sealed class MongoScriptCommand
+{
+    public const int CommandId = 0x0100;
+    public static readonly Guid CommandSet = new Guid("d2f1b2a0-1234-4abc-9876-abcdef123456");
+
+    private readonly AsyncPackage package;
+
+    private MongoScriptCommand(AsyncPackage package, OleMenuCommandService commandService)
+    {
+        this.package = package ?? throw new ArgumentNullException(nameof(package));
+        commandService = commandService ?? throw new ArgumentNullException(nameof(commandService));
+
+        var menuCommandID = new CommandID(CommandSet, CommandId);
+        var menuItem = new MenuCommand(this.Execute, menuCommandID);
+        commandService.AddCommand(menuItem);
+    }
+
+    public static async Task InitializeAsync(AsyncPackage package)
+    {
+        var commandService = await package.GetServiceAsync(typeof(IMenuCommandService)) as OleMenuCommandService;
+        new MongoScriptCommand(package, commandService);
+    }
+
+    private void Execute(object sender, EventArgs e)
+    {
+        var client = new MongoClient("mongodb://localhost:27017");
+        var database = client.GetDatabase("vsixdb");
+
+        var generator = new MongoScriptGenerator(database);
+
+        // Show tool window
+        var window = package.FindToolWindow(typeof(MongoScriptToolWindow), 0, true) as MongoScriptToolWindow;
+        if ((null == window) || (null == window.Frame))
+        {
+            throw new NotSupportedException("Cannot create tool window.");
+        }
+
+        // Generate script and update tool window
+        generator.GenerateScript(script => window.UpdateScript(script));
+
+        // Bring tool window to front
+        IVsWindowFrame windowFrame = (IVsWindowFrame)window.Frame;
+        Microsoft.VisualStudio.ErrorHandler.ThrowOnFailure(windowFrame.Show());
+    }
+}
+```
+
+---
+
+## 📄 File 5: Example Generated Script (mongo_seed.js)
+
+```javascript
+db.entries.insertMany([
+  {
+    Name: "async_connect",
+    AsioStub: "boost::asio::async_connect(socket, endpoint, handler);",
+    CodeStub: "public async Task AsyncConnect(string host, int port) { await Task.CompletedTask; }"
+  },
+  {
+    Name: "async_read",
+    AsioStub: "boost::asio::async_read(socket, buffer, handler);",
+    CodeStub: "public async Task<int> AsyncRead(byte[] buffer) { return await Task.FromResult(0); }"
+  },
+  {
+    Name: "async_write",
+    AsioStub: "boost::asio::async_write(socket, buffer, handler);",
+    CodeStub: "public async Task AsyncWrite(byte[] buffer) { await Task.CompletedTask; }"
+  }
+]);
+```
+
+---
+
+## ✅ Summary
+
+- **Entry.cs**: Schema definition.  
+- **MongoScriptGenerator.cs**: Handles input, keyword extraction, Mongo lookup, script generation, preview, clipboard copy, and file save.  
+- **MongoScriptToolWindow.cs**: Dedicated tool window with a text box to preview the script inside Visual Studio.  
+- **Command.cs**: Wires the VSIX button to generator and tool window.  
+- **mongo_seed.js**: Auto‑saved to Desktop and copied to clipboard.  
+
+---
+
+✨ With these complete files, your VSIX now has a polished **Mongo Script tool window**: paste Asio code, preview the generated script inside Visual Studio, copy it instantly, and save it to disk for Mongo shell execution.  
+
+Would you like me to also add **buttons inside the tool window itself** (Copy, Save) so users can trigger those actions directly from the preview pane?
